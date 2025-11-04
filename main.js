@@ -193,7 +193,6 @@
 
 
 
-
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
@@ -209,194 +208,186 @@ const images = [
 
 const textureLoader = new THREE.TextureLoader();
 
-// Prevent horizontal scroll and fit to page
 document.body.style.margin = '0';
 document.body.style.padding = '0';
 document.body.style.overflow = 'hidden';
 
-// Detect mobile
 const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-// Function to request fullscreen and lock landscape
-function requestLandscapeFullscreen() {
-  if (isMobile) {
-    // Request fullscreen
-    if (renderer.domElement.requestFullscreen) {
-      renderer.domElement.requestFullscreen();
-    } else if (renderer.domElement.webkitRequestFullscreen) {
-      renderer.domElement.webkitRequestFullscreen();
-    } else if (renderer.domElement.mozRequestFullScreen) {
-      renderer.domElement.mozRequestFullScreen();
-    } else if (renderer.domElement.msRequestFullscreen) {
-      renderer.domElement.msRequestFullscreen();
-    }
-
-    // Lock to landscape if supported
-    if (screen.orientation && screen.orientation.lock) {
-      screen.orientation.lock('landscape-primary').catch(err => {
-        console.log('Orientation lock failed:', err);
-      });
-    }
-
-    // Listen for orientation change and prompt if portrait
-    screen.orientation.addEventListener('change', () => {
-      if (screen.orientation.type.startsWith('portrait')) {
-        alert('Please rotate your device to landscape for the best experience.');
-      }
-    });
-  }
-}
-
-// Renderer setup with XR enabled
+// === Renderer ===
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
-renderer.toneMapping = THREE.NeutralToneMapping;
-renderer.toneMappingExposure = 1.0;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.xr.enabled = true; // Enable VR/AR support
+renderer.xr.enabled = true;
 document.body.appendChild(renderer.domElement);
-
-// Add VR button
 document.body.appendChild(VRButton.createButton(renderer));
 
-// Scene and camera
+// === Scene and Camera ===
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xffffff); // White background
+scene.background = new THREE.Color(0xffffff);
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 1000);
-camera.position.set(0, 0, 0); // Centered inside the sphere
+camera.position.set(0, 0, 0);
 
-// Controls
+// === Controls (desktop only) ===
 let controls;
+if (!isMobile) {
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+  controls.minDistance = 0.1;
+  controls.maxDistance = 1.5;
+  controls.enablePan = false;
+  controls.maxPolarAngle = Math.PI;
+  controls.minPolarAngle = 0;
+}
+
+// === Create spherical panels ===
+const sphereGroup = new THREE.Group();
+scene.add(sphereGroup);
+
+const radius = 2.5;
+const planeSize = 5;
+const planeGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
+
+const materials = images.map(img => {
+  const tex = textureLoader.load(img);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.MeshLambertMaterial({
+    map: tex,
+    side: THREE.FrontSide
+  });
+});
+
+const faceConfigs = [
+  { position: [0, 0, radius], materialIndex: 0 },
+  { position: [0, 0, -radius], materialIndex: 1 },
+  { position: [0, radius, 0], materialIndex: 2 },
+  { position: [0, -radius, 0], materialIndex: 3 },
+  { position: [radius, 0, 0], materialIndex: 4 },
+  { position: [-radius, 0, 0], materialIndex: 5 }
+];
+
+faceConfigs.forEach(cfg => {
+  const plane = new THREE.Mesh(planeGeometry, materials[cfg.materialIndex]);
+  plane.position.set(...cfg.position);
+  plane.lookAt(0, 0, 0);
+  sphereGroup.add(plane);
+});
+
+// === Lighting ===
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.4);
+scene.add(dirLight);
+
+// === Mobile handling ===
+let alpha = 0, beta = 0, gamma = 0;
+let permissionGranted = false;
+let tiltSupported = false;
+
+// Request fullscreen in landscape
+function requestLandscapeFullscreen() {
+  if (isMobile) {
+    const elem = renderer.domElement;
+    if (elem.requestFullscreen) elem.requestFullscreen();
+    else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen();
+    if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('landscape-primary').catch(() => {});
+    }
+  }
+}
+
+// Orientation event
+function onDeviceOrientation(event) {
+  if (event.alpha || event.beta || event.gamma) {
+    tiltSupported = true;
+    alpha = (event.alpha || 0) * Math.PI / 180;
+    beta = (event.beta || 0) * Math.PI / 180;
+    gamma = (event.gamma || 0) * Math.PI / 180;
+  }
+}
+
+// Fallback touch rotation
+let touchStartX = 0, touchStartY = 0;
+let lon = 0, lat = 0;
+let phi = 0, theta = 0;
+
+function onTouchStart(e) {
+  touchStartX = e.touches[0].pageX;
+  touchStartY = e.touches[0].pageY;
+}
+
+function onTouchMove(e) {
+  const deltaX = e.touches[0].pageX - touchStartX;
+  const deltaY = e.touches[0].pageY - touchStartY;
+  touchStartX = e.touches[0].pageX;
+  touchStartY = e.touches[0].pageY;
+
+  lon -= deltaX * 0.1;
+  lat += deltaY * 0.1;
+  lat = Math.max(-85, Math.min(85, lat));
+}
+
+// Update camera rotation for tilt or touch
+function updateMobileCamera() {
+  if (tiltSupported && permissionGranted) {
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = -alpha;
+    camera.rotation.x = beta;
+  } else {
+    // Fallback to touch
+    phi = THREE.MathUtils.degToRad(90 - lat);
+    theta = THREE.MathUtils.degToRad(lon);
+    camera.target = new THREE.Vector3(
+      Math.sin(phi) * Math.cos(theta),
+      Math.cos(phi),
+      Math.sin(phi) * Math.sin(theta)
+    );
+    camera.lookAt(camera.target);
+  }
+}
+
+// Request permission (iOS)
+function requestPermission() {
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission()
+      .then(state => {
+        if (state === 'granted') {
+          permissionGranted = true;
+          window.addEventListener('deviceorientation', onDeviceOrientation);
+        }
+      })
+      .catch(console.warn);
+  } else {
+    permissionGranted = true;
+    window.addEventListener('deviceorientation', onDeviceOrientation);
+  }
+}
+
+// Setup for mobile
 if (isMobile) {
-  // Custom device orientation for mobile
-  controls = null; // We'll handle orientation manually
-  let alpha = 0, beta = 0, gamma = 0;
-  let permissionGranted = false;
-
-  // Request permission for iOS (requires user gesture)
-  const requestPermission = () => {
-    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-      DeviceOrientationEvent.requestPermission()
-        .then(permissionState => {
-          if (permissionState === 'granted') {
-            permissionGranted = true;
-            window.addEventListener('deviceorientation', onDeviceOrientation);
-          }
-        })
-        .catch(console.error);
-    } else {
-      // Non-iOS
-      permissionGranted = true;
-      window.addEventListener('deviceorientation', onDeviceOrientation);
-    }
-  };
-
-  // Handle device orientation event
-  function onDeviceOrientation(event) {
-    alpha = event.alpha ? Math.PI / 180 * event.alpha : 0; // Z-axis rotation
-    beta = event.beta ? Math.PI / 180 * event.beta : 0; // X-axis rotation
-    gamma = event.gamma ? Math.PI / 180 * event.gamma : 0; // Y-axis rotation
-  }
-
-  // Apply orientation to camera
-  function updateCameraFromOrientation() {
-    if (permissionGranted) {
-      camera.rotation.order = 'YXZ';
-      camera.rotation.y = -alpha; // Yaw
-      camera.rotation.x = beta; // Pitch
-      camera.rotation.z = gamma; // Roll (optional, can set to 0 for stability)
-    }
-  }
-
-  // Add click listener for permission on mobile (triggers landscape fullscreen)
   renderer.domElement.addEventListener('click', () => {
     requestPermission();
     requestLandscapeFullscreen();
   }, { once: true });
 
-  // Also trigger on load if possible, but user gesture needed
-  window.addEventListener('load', () => {
-    setTimeout(() => {
-      if (!permissionGranted) {
-        requestLandscapeFullscreen(); // Request fullscreen without permission
-      }
-    }, 1000);
-  });
-} else {
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-  controls.minDistance = 0.1;
-  controls.maxDistance = 1.5; // Restrict zoom to stay inside
-  controls.enablePan = false; // Disable panning to keep centered
-  controls.maxPolarAngle = Math.PI; // Allow full rotation but stay inside
-  controls.minPolarAngle = 0;
+  renderer.domElement.addEventListener('touchstart', onTouchStart);
+  renderer.domElement.addEventListener('touchmove', onTouchMove);
 }
 
-// Sphere group (no auto-rotation)
-const sphereGroup = new THREE.Group();
-scene.add(sphereGroup);
-
-// Parameters for spherical arrangement
-const radius = 2.5;
-const planeSize = 5; // Larger planes to minimize gaps when viewed from inside
-const planeGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
-
-// Load textures and create materials for each "face" (FrontSide since facing inward)
-const materials = [];
-for (let i = 0; i < 6; i++) {
-  const imageTexture = textureLoader.load(images[i]);
-  imageTexture.colorSpace = THREE.SRGBColorSpace; // Proper color space
-
-  const material = new THREE.MeshLambertMaterial({ // Lambert for even lighting, no glare
-    map: imageTexture,
-    side: THREE.FrontSide // Front side faces inward
-  });
-  materials.push(material);
-}
-
-// Define positions for 6 inward-facing panels (octahedral directions)
-const faceConfigs = [
-  { position: [0, 0, radius], materialIndex: 0 },   // +Z
-  { position: [0, 0, -radius], materialIndex: 1 },  // -Z
-  { position: [0, radius, 0], materialIndex: 2 },   // +Y
-  { position: [0, -radius, 0], materialIndex: 3 },  // -Y
-  { position: [radius, 0, 0], materialIndex: 4 },   // +X
-  { position: [-radius, 0, 0], materialIndex: 5 }   // -X
-];
-
-// Create and position each plane
-faceConfigs.forEach(config => {
-  const plane = new THREE.Mesh(planeGeometry, materials[config.materialIndex]);
-  plane.position.set(...config.position);
-  plane.lookAt(0, 0, 0); // Orient to face the center (inward)
-  sphereGroup.add(plane);
-});
-
-// Lighting (placed inside for even illumination)
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); // Soft ambient
-scene.add(ambientLight);
-
-const directionalLight = new THREE.DirectionalLight(0xffffff, 0.4); // Soft directional inside
-directionalLight.position.set(0, 0, 0); // At center, but will illuminate uniformly with ambient
-scene.add(directionalLight);
-
-// Animation loop (no auto-rotation)
+// === Animation loop ===
 function animate() {
   if (isMobile) {
-    updateCameraFromOrientation();
+    updateMobileCamera();
   } else if (controls) {
     controls.update();
   }
   renderer.render(scene, camera);
 }
 
-// Use setAnimationLoop for XR support
 renderer.setAnimationLoop(animate);
 
-// Resize handler (maintain aspect and fit)
+// === Resize ===
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
